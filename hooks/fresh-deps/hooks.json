@@ -1,0 +1,30 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^apply_patch$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --no-project --python '>=3.11' \"$(git rev-parse --show-toplevel)/.codex/hooks/fresh-deps.py\"",
+            "timeout": 60,
+            "statusMessage": "Checking dependency freshness"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^apply_patch$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --no-project --python '>=3.11' \"$(git rev-parse --show-toplevel)/.codex/hooks/fresh-deps.py\"",
+            "timeout": 60,
+            "statusMessage": "Checking dependency advisories"
+          }
+        ]
+      }
+    ]
+  }
+}

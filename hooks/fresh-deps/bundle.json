@@ -1,0 +1,17 @@
+{
+  "name": "fresh-deps",
+  "sourcePath": "hooks/fresh-deps/hooks.json",
+  "description": "Codex dependency freshness and security checker. Blocks unsafe changed dependency specs before apply_patch lands and advises on existing unsafe dependencies after the edit.",
+  "compatibility": "direct",
+  "notes": [
+    "Python implementation invoked directly with uv.",
+    "Runs before apply_patch so blocked changed dependency specs do not land.",
+    "Runs after apply_patch to add non-blocking advisory context for unchanged dependencies in touched files.",
+    "Parser helpers are flat files next to the hook under .codex/hooks."
+  ],
+  "events": [
+    "PreToolUse",
+    "PostToolUse"
+  ],
+  "hasSupportingFiles": true
+}
