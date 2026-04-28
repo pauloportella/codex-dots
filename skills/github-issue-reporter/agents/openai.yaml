@@ -1,0 +1,4 @@
+interface:
+  display_name: "GitHub Issue Reporter"
+  short_description: "Draft and file GitHub issues"
+  default_prompt: "Use $github-issue-reporter to search for duplicates, draft the issue text, and wait for approval before posting."

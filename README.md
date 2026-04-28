@@ -8,6 +8,9 @@ Reusable Codex bundles.
   stale versions, or known vulnerable versions before `apply_patch` lands. It
   also gives non-blocking advisories for unchanged dependencies in touched
   dependency files.
+- `skills/github-issue-reporter`: searches for duplicate GitHub issues, follows
+  live issue templates, drafts exact issue text, and waits for approval before
+  posting.
 - `skills/quick-grill`: adds a short preflight and approval step before work.
 
 ## Install
@@ -28,6 +31,7 @@ Skill bundle:
 ```bash
 mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills"
 cp -R skills/quick-grill "${CODEX_HOME:-$HOME/.codex}/skills/"
+cp -R skills/github-issue-reporter "${CODEX_HOME:-$HOME/.codex}/skills/"
 ```
 
 For `quick-grill`, enable:
