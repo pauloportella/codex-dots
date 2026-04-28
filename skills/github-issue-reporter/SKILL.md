@@ -15,9 +15,10 @@ Help the user file high-quality GitHub issues without creating duplicates or pos
 4. Compare likely related issues and say whether the new report is a duplicate.
 5. Draft the exact title and body using the right template.
 6. Ask for any missing required fields.
-7. Show the exact final text and ask for approval with `request_user_input`.
-8. Post with `gh issue create` only after approval.
-9. Return the created issue URL.
+7. Print the exact final text in the conversation.
+8. Only after the draft is visible, ask for approval with `request_user_input`.
+9. Post with `gh issue create` only after approval.
+10. Return the created issue URL.
 
 If the user supplies several reports, handle them one at a time unless they explicitly ask for batching.
 
@@ -59,15 +60,23 @@ For environment fields, collect exact values where possible with local commands 
 
 Never post, comment, close, label, or mutate a GitHub issue before the user approves the exact text.
 
-Use the Codex `request_user_input` tool when available. Ask a single approval question with:
+Before asking for approval, always print the final artifact in the thread:
+
+- for a new issue: show `Title:` and the full `Body:`
+- for a comment: show the target issue or PR and the full comment body
+- for any other mutation: show exactly what will be sent to GitHub
+
+The approval question must come after that visible draft in the same turn. Do not ask "approve posting the drafted text shown in the conversation" unless the draft text is already visible above the question. If you asked too early, say the approval was invalid, show the draft, and ask again.
+
+Use the Codex `request_user_input` tool when available. Ask a single approval question immediately after the draft with:
 
 - `Approve (Recommended)`: post the drafted issue exactly as shown
 - `Deny`: do not post the issue
-- free-form other text: treat as requested edits or missing information, then revise and ask again
+- `Something else`: let the user provide edits or missing information in free-form text
 
 If the tool is unavailable, ask the same approval question in plain text with `Approve`, `Deny`, or `Something else`.
 
-Approval must be explicit through the approval question. A user providing a missing field or edit is not approval to post unless they also clearly approve the final text.
+Approval must be explicit through the approval question after the final text is visible. A user providing a missing field or edit is not approval to post unless they also clearly approve the revised final text.
 
 After approval, use a body file or heredoc so formatting is preserved:
 
