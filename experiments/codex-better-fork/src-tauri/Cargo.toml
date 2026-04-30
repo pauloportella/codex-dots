@@ -1,0 +1,18 @@
+[package]
+name = "codex-better-fork"
+version = "0.1.0"
+description = "Native shell and app-server bridge for codex-better-fork"
+authors = ["Paulo Portella"]
+edition = "2021"
+
+[lib]
+name = "codex_better_fork_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.5.6", features = [] }
+
+[dependencies]
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+tauri = { version = "2.10.3", features = [] }

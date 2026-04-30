@@ -12,6 +12,9 @@ Reusable Codex bundles.
   live issue templates, drafts exact issue text, and waits for approval before
   posting.
 - `skills/quick-grill`: adds a short preflight and approval step before work.
+- `skills/codex-better-fork`: launches and supports the experimental
+  handoff-backed fork helper, including opening its localhost UI in Codex's
+  in-app browser.
 
 ## Install
 
@@ -32,6 +35,7 @@ Skill bundle:
 mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills"
 cp -R skills/quick-grill "${CODEX_HOME:-$HOME/.codex}/skills/"
 cp -R skills/github-issue-reporter "${CODEX_HOME:-$HOME/.codex}/skills/"
+cp -R skills/codex-better-fork "${CODEX_HOME:-$HOME/.codex}/skills/"
 ```
 
 For `quick-grill`, enable:

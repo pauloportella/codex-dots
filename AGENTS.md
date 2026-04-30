@@ -35,6 +35,10 @@ Skills install into `${CODEX_HOME:-$HOME/.codex}/skills/<skill-name>/`.
 
 - Keep docs concise and installation-focused.
 - Add or update tests when changing hook behavior.
+- For `experiments/codex-better-fork` work, acknowledge the hybrid runtime:
+  use `skills/codex-better-fork/SKILL.md`, run the Tauri app to expose the local
+  bridge, and open `http://localhost:1420` in Codex's in-app browser when the
+  user wants to use it from Codex.
 - For `fresh-deps`, run:
 
 ```bash

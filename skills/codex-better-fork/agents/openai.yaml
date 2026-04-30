@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex Better Fork"
+  short_description: "Run and maintain the fork helper"
+  default_prompt: "Use $codex-better-fork to open the fork helper in Codex's in-app browser."
