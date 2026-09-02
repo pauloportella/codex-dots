@@ -29,8 +29,6 @@ Prefer hook commands that resolve from the target git root, for example:
 ```
 
 Skills install into `${CODEX_HOME:-$HOME/.codex}/skills/<skill-name>/`.
-`quick-grill` also expects `default_mode_request_user_input = true`.
-
 ## Development
 
 - Keep docs concise and installation-focused.
