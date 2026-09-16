@@ -10,6 +10,8 @@ Reusable Codex bundles.
   dependency files.
 - `hooks/unslop-writing`: reports cliché candidates after prose edits and
   before a turn stops.
+- `hooks/jev-stop`: asks Jev whether a final response leaves authorized work
+  unfinished, using redacted conversation text sent to TypeSafe.
 - `skills/github-issue-reporter`: searches for duplicate GitHub issues, follows
   live issue templates, drafts exact issue text, and waits for approval before
   posting.
@@ -22,7 +24,7 @@ Reusable Codex bundles.
 
 ## Install
 
-Hook bundle, replacing `<bundle>` with `fresh-deps` or `unslop-writing`:
+Hook bundle, replacing `<bundle>` with `fresh-deps`, `unslop-writing`, or `jev-stop`:
 
 1. Copy `hooks/<bundle>/.codex/hooks/*` into your target repo's `.codex/hooks/`.
 2. Merge `hooks/<bundle>/hooks.json` into your target repo's `.codex/hooks.json`.
@@ -32,6 +34,8 @@ Hook bundle, replacing `<bundle>` with `fresh-deps` or `unslop-writing`:
 [features]
 hooks = true
 ```
+
+Jev also requires a TypeSafe API key. Read its [setup and privacy notes](hooks/jev-stop/README.md) before enabling it.
 
 Skill bundle:
 
@@ -53,6 +57,7 @@ Run hook tests from this repository root:
 uv run --no-project --python '>=3.11' python hooks/fresh-deps/tests/test-fresh-deps.py
 node --test hooks/unslop-writing/tests/unslop-writing.test.mjs
 node hooks/unslop-writing/.codex/hooks/cliche-detector.mjs --self-test
+uv run --no-project --python '>=3.11' python hooks/jev-stop/tests/test-jev-stop.py
 ```
 
 ## License

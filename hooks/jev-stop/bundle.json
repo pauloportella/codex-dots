@@ -1,0 +1,16 @@
+{
+  "name": "jev-stop",
+  "sourcePath": "hooks/jev-stop/hooks.json",
+  "description": "Codex Stop guard that asks Jev whether a final response leaves authorized work unfinished.",
+  "compatibility": "direct",
+  "notes": [
+    "Python standard-library implementation invoked with uv on macOS or Linux.",
+    "Requires a TypeSafe JEV_API_KEY and sends redacted dialogue to its API.",
+    "Stop allows at most one continuation; missing context and API failures allow the stop.",
+    "The question file stays beside the hook under .codex/hooks."
+  ],
+  "events": [
+    "Stop"
+  ],
+  "hasSupportingFiles": true
+}

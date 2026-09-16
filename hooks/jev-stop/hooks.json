@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --no-project --python '>=3.11' \"$(git rev-parse --show-toplevel)/.codex/hooks/jev-stop.py\"",
+            "timeout": 5,
+            "statusMessage": "Checking for unfinished work with Jev"
+          }
+        ]
+      }
+    ]
+  }
+}
