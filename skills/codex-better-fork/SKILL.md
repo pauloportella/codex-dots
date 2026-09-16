@@ -14,26 +14,13 @@ in-app browser can view the app through the localhost UI.
 When the user wants to use the app from Codex, do only the setup needed to put
 the UI in front of them:
 
-1. Prefer the installed app at `/Applications/codex-better-fork.app`.
-2. If it is not installed, use the repo dev flow from
-   `experiments/codex-better-fork`:
+1. Resolve the source checkout and read its applicable instructions before running project commands. Prefer the installed app at `/Applications/codex-better-fork.app` and reuse an existing healthy process.
+2. The Tauri process owns the HTTP bridge at `http://127.0.0.1:1421/healthz`. The installed app serves its bundled frontend in its native window; it does not start Vite on port 1420.
+3. For in-app browser use, also ensure the Vite UI is available at `http://localhost:1420`. If the installed app supplies the bridge but Vite is absent, run `pnpm dev` from `experiments/codex-better-fork`. Reuse an existing UI server when healthy.
+4. If the app is not installed and neither process is running, use `pnpm tauri dev` from that project. Its development command starts Vite and Tauri together. Avoid starting a second bridge process when one is already healthy.
+5. Verify both the bridge and UI, then open the UI in Codex's in-app browser using the available browser-control tools. Confirm the actual app is visible before declaring it open.
 
-```bash
-pnpm tauri dev
-```
-
-3. After the Tauri app is running, open the UI in Codex's in-app browser at:
-
-```text
-http://localhost:1420
-```
-
-The Tauri process owns the local HTTP bridge on `127.0.0.1:1421`; opening the
-Vite UI alone is not enough if the Tauri process is not running.
-
-When opening or inspecting the localhost UI, use the Browser plugin/in-app
-browser workflow when available. Opening the UI is enough for ordinary "use it
-in Codex" requests.
+Starting Vite alone does not supply the bridge. Starting the installed Tauri app alone does not supply the localhost browser UI. Follow existing dependency and permission requirements for either launch path.
 
 ## App Workflow
 
@@ -41,10 +28,9 @@ The app itself lets the user:
 
 1. List recent Codex sessions from `codex app-server`.
 2. Select a session and a turn boundary.
-3. Generate a handoff preview from the transcript up to that boundary.
+3. Generate a handoff preview from the selected user message through the end of the source transcript.
 4. Review the handoff.
-5. Fork the source thread, roll back the new fork to the selected boundary, and
-   start the fork with the approved handoff.
+5. Fork the source thread, roll back the new fork to before the selected user message, and start it with the approved handoff.
 6. Open the resulting `codex://threads/<id>` link.
 
 Do not operate this workflow for the user unless they explicitly ask for app
@@ -53,9 +39,7 @@ localhost UI is open in the Codex in-app browser.
 
 ## Troubleshooting
 
-If `http://localhost:1420` does not load, check whether the Tauri app is running
-and whether `http://127.0.0.1:1421/healthz` responds. If the bridge is missing,
-start the Tauri app rather than treating the browser UI as standalone.
+Check UI and bridge availability independently. Restore the missing process through the matching launch path above; report actual errors without claiming a healthy bridge proves that the browser UI is available.
 
 If the user explicitly asks to modify or debug the app, then read
 `experiments/codex-better-fork/AGENTS.md` and

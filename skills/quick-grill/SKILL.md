@@ -1,6 +1,6 @@
 ---
 name: quick-grill
-description: Brief first-prompt preflight and lightweight approval interview. Use when the user tags this skill at the start of a session and wants the model to pause before execution, inspect the prompt, identify missing decisions or risks, ask a small number of focused questions, then propose a plan for approval.
+description: Clarify a task and pause for plan approval before execution. Use only when the user explicitly requests Quick Grill.
 ---
 
 # Quick Grill
@@ -23,7 +23,7 @@ If a question can be answered by inspecting local files, repo context, attached 
 
 ## Questioning
 
-Use the Codex `request_user_input` tool when available. This skill works best when `default_mode_request_user_input = true` is enabled. If the tool is unavailable, ask the same focused question in plain text.
+Use the available question tool for design or scope preferences when its contract permits it. Otherwise ask a concise plain-text question. Request plan approval through the environment's permitted approval mechanism, using plain text when a question tool is preference-only.
 
 Ask at most three questions in the first round. Prefer one or two when enough.
 
@@ -41,13 +41,9 @@ Continue with another short round only if a material blocker remains after the u
 
 If the prompt is clear enough, still pause before execution.
 
-Ask for approval with a concise plan. The approval question should usually offer:
+Present a concise plan and ask for any missing approval. Existing explicit approval of the unchanged plan remains valid, so do not repeat the preflight after approval.
 
-- proceed with recommended plan
-- adjust scope
-- stop or answer only
-
-Keep the plan short. State what will be done, what will not be done, and what verification or output the user should expect.
+Keep the plan short. State the intended result, material scope boundaries, and relevant verification.
 
 ## Output Shape
 

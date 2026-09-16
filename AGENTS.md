@@ -19,7 +19,7 @@ Hooks install into the target repo:
 
 - copy `.codex/hooks/*`
 - merge `hooks.json`
-- enable `[features].codex_hooks = true`
+- enable `[features].hooks = true`
 - trust the target project
 
 Prefer hook commands that resolve from the target git root, for example:
@@ -29,7 +29,7 @@ Prefer hook commands that resolve from the target git root, for example:
 ```
 
 Skills install into `${CODEX_HOME:-$HOME/.codex}/skills/<skill-name>/`.
-`quick-grill` also expects `default_mode_request_user_input = true`.
+`quick-grill` uses the available question tool for preferences and the environment's permitted mechanism for plan approval; no feature flag is required.
 
 ## Development
 

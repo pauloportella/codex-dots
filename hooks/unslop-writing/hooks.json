@@ -1,0 +1,29 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "^(?:apply_patch|Edit|Write)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$(git rev-parse --show-toplevel)/.codex/hooks/unslop-writing.mjs\"",
+            "timeout": 10,
+            "statusMessage": "Checking edited prose for clichés"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$(git rev-parse --show-toplevel)/.codex/hooks/unslop-writing.mjs\"",
+            "timeout": 10,
+            "statusMessage": "Checking final prose for clichés"
+          }
+        ]
+      }
+    ]
+  }
+}

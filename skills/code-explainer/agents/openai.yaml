@@ -1,0 +1,4 @@
+interface:
+  display_name: "Code Explainer"
+  short_description: "Create code-backed HTML feature explainers"
+  default_prompt: "Use $code-explainer to inspect the implementation and create a source-backed Notion-style HTML explainer."
