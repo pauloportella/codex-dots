@@ -13,11 +13,20 @@ TypeSafe API key. The deadline uses Unix signals; Windows is not supported.
 
 ## Behavior
 
-The hook sends up to 16 recent user/final-assistant messages and the proposed
-final response to `https://api.typesafe.ai/v1/systemone`, using `jev-latest`
-and the adjacent `jev-stop-question.json`. It reads the last 8 MiB of the
-transcript and trims dialogue to a 24 KB state budget. Older obligations can
-be missed.
+The hook streams a fixed snapshot of the task transcript and extracts user
+messages and final assistant replies before applying a 64 KB redacted-state
+budget. Large tool outputs cannot evict the user's request. When dialogue exceeds the budget, it
+keeps a recent suffix and the opening user request if that request is at most
+8 KB. The classifier is told that the opening request may have been completed
+or superseded. Oversized context without a usable recent user message is skipped.
+
+It sends that dialogue and the proposed final response to
+`https://api.typesafe.ai/v1/systemone`, using `jev-latest` and the adjacent
+`jev-stop-question.json`. Original dialogue survives resume and compaction when
+present in the transcript; no additional prompt log or cross-task memory is used.
+The transcript format is a Codex implementation detail, so extraction needs
+checking after format changes. Omitted middle history can still hide obligations,
+and indirect completeness questions can remain below threshold with full history.
 
 A score of at least 0.80 asks Codex to continue already-authorized work or ask
 the necessary clarification. The question respects explanation-only requests,
@@ -25,8 +34,9 @@ explicit pauses, scope limits, and genuine blockers. It evaluates the stopping
 point, not code correctness. `stop_hook_active` prevents a second continuation.
 
 Missing credentials, missing or unusable history, invalid responses, and API
-failures allow the stop. The API has a three-second deadline and no retry;
-the hook timeout is five seconds.
+failures allow the stop. History collection has a one-second deadline; exceeding
+it skips classification and logs `history_timeout`. The API has a three-second
+deadline and no retry; the hook timeout is five seconds.
 
 ## Install
 
@@ -69,9 +79,11 @@ provider.
 
 Daily decision logs are created at `~/.codex/log/jev-stop/YYYY-MM-DD.jsonl`
 with mode `0600`. They contain task/turn IDs, the full local transcript path,
-hashes, score/model when available, decision/reason, and timing. They exclude
-conversation text, keys, and raw API/error bodies. Logs are retained until
-removed; keep logs, transcripts, and credentials out of public bundles.
+hashes, score/model when available, decision/reason, and timing. Coverage metadata
+includes available/selected dialogue counts, omitted-message count, whether the
+opening request survived, redacted-state bytes, and history-collection time.
+Logs exclude conversation text, keys, and raw API/error bodies. Logs are retained
+until removed; keep logs, transcripts, and credentials out of public bundles.
 
 ## Verify
 

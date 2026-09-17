@@ -99,6 +99,77 @@ class JevStopTests(unittest.TestCase):
         self.assertEqual(hook.redact(text), text)
         self.assertEqual(hook.redact('/Users/sam/client/pay.csv'), '[HOME]/client/pay.csv')
 
+    def test_tool_heavy_turn_preserves_the_user_request(self):
+        rows = [
+            message('user', 'Please finish the change.'),
+            {'type': 'response_item', 'payload': {
+                'type': 'function_call_output', 'output': 'tool output ' * 800_000,
+            }},
+        ]
+        self.transcript.write_text('\n'.join(json.dumps(row) for row in rows))
+        self.assertGreater(self.transcript.stat().st_size, 8 * 1024 * 1024)
+        self.assertEqual(self.run_hook()['decision'], 'block')
+        state = json.loads(self.connection.request.call_args.args[2])['state']
+        self.assertEqual(state['conversation'], [{'role': 'user', 'text': 'Please finish the change.'}])
+        log_path = next(hook.LOG_DIRECTORY.glob('*.jsonl'))
+        audit = json.loads(log_path.read_text().splitlines()[-1])
+        self.assertEqual(audit['transcript_start'], 0)
+        self.assertEqual(audit['omitted_message_count'], 0)
+        self.assertTrue(audit['opening_request_retained'])
+
+    def test_small_dialogue_is_not_limited_to_sixteen_messages(self):
+        rows = [message('user', f'Clarification {number}.') for number in range(40)]
+        self.transcript.write_text('\n'.join(json.dumps(row) for row in rows))
+        audit = {}
+        state = hook.read_state(self.event, self.key, audit)
+        self.assertEqual(len(state['conversation']), 40)
+        self.assertFalse(state['earlier_history_omitted'])
+        self.assertEqual(audit['omitted_message_count'], 0)
+
+    def test_bounded_history_preserves_opening_and_latest_scope(self):
+        opening = f'Fix the importer using {self.key}.'
+        latest = 'Cancel the fix. Only explain what you found.'
+        rows = [message('user', opening)] + [
+            message('assistant', f'Prior discussion {number}. ' * 30, 'final')
+            for number in range(20)
+        ] + [message('user', latest)]
+        self.transcript.write_text('\n'.join(json.dumps(row) for row in rows))
+        audit = {}
+        with patch.object(hook, 'MAX_STATE_BYTES', 2_000):
+            state = hook.read_state(self.event, self.key, audit)
+            self.assertLessEqual(len(json.dumps(state, ensure_ascii=False).encode()), 2_000)
+            self.assertEqual(state['opening_request'], 'Fix the importer using [REDACTED].')
+            self.assertEqual(state['conversation'][-1]['text'], latest)
+            self.assertTrue(state['earlier_history_omitted'])
+            self.assertGreater(audit['omitted_message_count'], 0)
+            self.assertEqual(audit['dialogue_message_count'], len(rows))
+            self.assertEqual(audit['omitted_message_count'], len(rows) - len(state['conversation']) - 1)
+            rows.append(message('assistant', self.event['last_assistant_message'], 'final'))
+            self.transcript.write_text('\n'.join(json.dumps(row) for row in rows))
+            self.assertEqual(hook.read_state(self.event, self.key, {}), state)
+
+    def test_opening_after_an_assistant_message_is_not_duplicated(self):
+        rows = [message('assistant', 'Earlier answer.', 'final'), message('user', 'Fix it.')]
+        self.transcript.write_text('\n'.join(json.dumps(row) for row in rows))
+        audit = {}
+        state = hook.read_state(self.event, self.key, audit)
+        self.assertNotIn('opening_request', state)
+        self.assertEqual(audit['omitted_message_count'], 0)
+        self.assertTrue(audit['opening_request_retained'])
+
+    def test_history_deadline_skips_api_and_logs_the_reason(self):
+        with patch.object(hook, 'HISTORY_TIMEOUT', -1):
+            self.assertEqual(self.run_hook(), {})
+        self.connection_factory.assert_not_called()
+        log_path = next(hook.LOG_DIRECTORY.glob('*.jsonl'))
+        audit = json.loads(log_path.read_text().splitlines()[-1])
+        self.assertEqual(audit['reason'], 'history_timeout')
+
+    def test_oversized_current_request_skips_api(self):
+        self.transcript.write_text(json.dumps(message('user', 'Review this. ' * 6_000)))
+        self.assertEqual(self.run_hook(), {})
+        self.connection_factory.assert_not_called()
+
     def test_private_env_file_and_environment_precedence(self):
         hook.ENV_FILE.write_text('JEV_API_KEY=file-test-key\n')
         hook.ENV_FILE.chmod(0o600)

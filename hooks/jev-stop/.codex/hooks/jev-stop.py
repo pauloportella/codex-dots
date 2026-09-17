@@ -15,9 +15,9 @@ import time
 from collections import deque
 
 THRESHOLD = 0.80
-MAX_MESSAGES = 16
-MAX_STATE_BYTES = 24_000
-MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024
+MAX_STATE_BYTES = 64_000
+MAX_OPENING_BYTES = 8_000
+HISTORY_TIMEOUT = 1
 API_TIMEOUT = 3
 ENV_FILE = Path.home() / '.config' / 'jev.env'
 LOG_DIRECTORY = Path.home() / '.codex' / 'log' / 'jev-stop'
@@ -108,18 +108,32 @@ def read_state(event, api_key, audit):
     final = event.get('last_assistant_message')
     if not isinstance(path, str) or not isinstance(final, str) or not final.strip():
         return None
-    history = deque(maxlen=MAX_MESSAGES + 1)
+    started = time.monotonic()
+    history = deque()
+    history_bytes = 0
+    opening = None
+    pending = None
     count = 0
     final = redact(final, api_key)
+
+    def retain(message):
+        nonlocal history_bytes, count
+        history.append(message)
+        history_bytes += len(json.dumps(message, ensure_ascii=False).encode())
+        count += 1
+        while len(history) > 1 and history_bytes > MAX_STATE_BYTES:
+            history_bytes -= len(json.dumps(history.popleft(), ensure_ascii=False).encode())
+
     with Path(path).open('rb') as stream:
         size = os.fstat(stream.fileno()).st_size
-        start = max(0, size - MAX_TRANSCRIPT_BYTES)
-        stream.seek(start)
-        if start:
-            stream.readline()
-        audit.update(transcript_path=path, transcript_bytes=size, transcript_start=stream.tell())
+        audit.update(transcript_path=path, transcript_bytes=size, transcript_start=0)
         # Read a fixed snapshot: later writes must not change the evidence for this stop.
-        for line in stream.read(size - stream.tell()).splitlines():
+        # Filter before budgeting: tool-heavy turns must not evict the user's task.
+        while stream.tell() < size:
+            if time.monotonic() - started > HISTORY_TIMEOUT:
+                audit.update(reason='history_timeout', history_elapsed_ms=round((time.monotonic() - started) * 1000))
+                return None
+            line = stream.readline(size - stream.tell())
             try:
                 record = json.loads(line)
             except (ValueError, UnicodeError):
@@ -137,20 +151,44 @@ def read_state(event, api_key, audit):
             text = '\n'.join(c.get('text', '') for c in message.get('content', []) if c.get('type') in ('input_text', 'output_text', 'text'))
             text = redact(user_text(text) if role == 'user' else text, api_key)
             if text:
-                history.append({'role': role, 'text': text})
-                count += 1
+                message = {'role': role, 'text': text}
+                if opening is None and role == 'user':
+                    opening = message
+                if pending is not None:
+                    retain(pending)
+                pending = message
+    if time.monotonic() - started > HISTORY_TIMEOUT:
+        audit.update(reason='history_timeout', history_elapsed_ms=round((time.monotonic() - started) * 1000))
+        return None
     # The final may already have been flushed to the rollout before Stop fires.
-    if history and history[-1] == {'role': 'assistant', 'text': final}:
-        history.pop()
-        count -= 1
-    conversation = list(history)[-MAX_MESSAGES:]
-    state = {'conversation': conversation, 'proposed_final_response': final, 'earlier_history_omitted': bool(start or count > MAX_MESSAGES)}
+    if pending is not None and pending != {'role': 'assistant', 'text': final}:
+        retain(pending)
+    conversation = list(history)
+    state = {'conversation': conversation, 'proposed_final_response': final, 'earlier_history_omitted': count > len(conversation)}
+    # ponytail: retain the opening request plus a recent suffix; older middle context
+    # can still be lost. Add a task summary only if logged misses justify that cost.
+    keep_opening = opening is not None and len(opening['text'].encode()) <= MAX_OPENING_BYTES
+    opening_in_history = any(message is opening for message in conversation)
+    if keep_opening and not opening_in_history:
+        state['opening_request'] = opening['text']
     while conversation and len(json.dumps(state, ensure_ascii=False).encode()) > MAX_STATE_BYTES:
-        conversation.pop(0)
+        if conversation.pop(0) is opening:
+            opening_in_history = False
         state['earlier_history_omitted'] = True
+        if keep_opening and not opening_in_history:
+            state['opening_request'] = opening['text']
+    audit.update(
+        history_elapsed_ms=round((time.monotonic() - started) * 1000),
+        dialogue_message_count=count, message_count=len(conversation),
+        omitted_message_count=count - len(conversation) - int('opening_request' in state),
+        opening_request_retained=bool('opening_request' in state or opening_in_history),
+        earlier_history_omitted=state['earlier_history_omitted'],
+        state_bytes=len(json.dumps(state, ensure_ascii=False).encode()),
+        final_sha256=digest(final),
+    )
     if not any(m['role'] == 'user' for m in conversation):
         return None
-    audit.update(input_sha256=digest(state), final_sha256=digest(final), message_count=len(conversation), earlier_history_omitted=state['earlier_history_omitted'])
+    audit['input_sha256'] = digest(state)
     return state
 
 
@@ -217,7 +255,7 @@ def main():
             api_key = load_key()
             state = read_state(event, api_key, audit)
             if state is None:
-                audit['reason'] = 'missing_history'
+                audit.setdefault('reason', 'missing_history')
             else:
                 audit.update(classify(state, question, api_key))
                 if audit.get('score', 0) >= THRESHOLD:
