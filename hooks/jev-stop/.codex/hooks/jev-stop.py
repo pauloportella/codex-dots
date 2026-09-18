@@ -34,33 +34,104 @@ def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
+def sensitive_field(name):
+    if name.startswith('"'):
+        try:
+            name = json.loads(name)
+        except ValueError:
+            pass
+    name = re.sub(r'[^a-z0-9]', '', name.lower())
+    return bool(
+        re.search(r'apikey|token|secret|password|passwd|credential|privatekey', name)
+        or re.fullmatch(r'(?:pwd|mysqlpwd|dbpass|databasepass|auth|authorization|proxyauthorization|cookie|setcookie|session|sessionid|csrf|xsrf|(?:priv|auth|service|account|client|db|database)key)', name)
+    )
+
+
+def value_end(text, start):
+    # Mask incomplete sensitive values through EOF, including any private tail.
+    if start >= len(text) or text[start].isspace():
+        return start
+    if text[start] not in '\"\'`[{':
+        match = re.match(r'(?:\\[\s\S]|[^\s,;`}\]])+', text[start:])
+        return start + len(match[0]) if match else start
+    stack = []
+    quote = ''
+    index = start
+    while index < len(text):
+        char = text[index]
+        if quote:
+            if char == '\\':
+                index += 1
+            elif char == quote:
+                quote = ''
+                if not stack:
+                    return index + 1
+        elif char in '\"\'`':
+            quote = char
+        elif char in '{[':
+            stack.append('}' if char == '{' else ']')
+        elif char in '}]':
+            if not stack or stack.pop() != char:
+                return len(text)
+            if not stack:
+                return index + 1
+        index += 1
+    return len(text)
+
+
 def redact(text, api_key=''):
     text = text.replace('\\_', '_')
+    spans = []
     if api_key:
-        text = text.replace(api_key, '[REDACTED]')
-    text = re.sub(
-        r'-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----',
-        '[REDACTED_PRIVATE_KEY]', text,
+        for match in re.finditer(re.escape(api_key), text):
+            spans.append((match.start(), match.end(), '[REDACTED]'))
+    fields = re.compile(r"""("(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|[A-Za-z_$][\w.$-]*)[ \t]*(?::=|=>|[:=])[ \t]*""")
+    cursor = 0
+    while match := fields.search(text, cursor):
+        cursor = match.end()
+        if not sensitive_field(match[1]):
+            continue
+        start = cursor
+        if start < len(text) and text[start] in '\r\n':
+            following = start + len(re.match(r'\s*', text[start:])[0])
+            if match[1][0] in '\"\'' or (following < len(text) and text[following] in '\"\'`[{'):
+                start = following
+        end = value_end(text, start)
+        if end > start:
+            spans.append((start, end, '[REDACTED]'))
+        cursor = max(cursor, end)
+    # Detect on original text, then merge overlaps before replacing anything.
+    rules = (
+        (r'-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)', '[REDACTED_PRIVATE_KEY]', False),
+        (r'(?im)(\b(?:authorization|proxy-authorization|cookie|set-cookie)[ \t]*[:=][ \t]*)[^\r\n]+', '[REDACTED]', True),
+        (r'(?i)\b(?:Bearer|Basic)[ \t]+[A-Za-z0-9._~+/=-]+', '[REDACTED_AUTH]', False),
+        (r'(?i)\b(?:username|login|u:)[ \t]*:?[ \t]*\S+[ \t]+(?:password|pw|p:)[ \t]*:?[ \t]*[^\r\n]+', '[REDACTED]', False),
+        (r"\b[a-zA-Z][a-zA-Z0-9+.-]*://[^\s<>\"'`\)]+", '[URL]', False),
+        (r'[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}', '[EMAIL]', False),
+        (r"/(?:Users|home)/[^/\s\"'`<>\)]+", '[HOME]', False),
+        (r'\b(?:apikey_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]{15,}|gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|AKIA[A-Z0-9]{16}|xox[baprs]-[A-Za-z0-9-]+)\b', '[REDACTED_TOKEN]', False),
+        (r'\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+', '[REDACTED_JWT]', False),
     )
-    text = re.sub(
-        r'(?im)(\b(?:authorization|proxy-authorization|cookie|set-cookie)\s*[:=]\s*)[^\r\n]+',
-        r'\1[REDACTED]', text,
-    )
-    text = re.sub(r'(?i)\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+', '[REDACTED_AUTH]', text)
-    text = re.sub(
-        r'''(?im)(["']?\b(?:[A-Z0-9_]*(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL)[A-Z0-9_]*|api-key)["']?\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;`]+)''',
-        r'\1[REDACTED]', text,
-    )
-    text = re.sub(
-        r'\b(?:apikey_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]{15,}|gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|AKIA[A-Z0-9]{16}|xox[baprs]-[A-Za-z0-9-]+)\b',
-        '[REDACTED_TOKEN]', text,
-    )
-    text = re.sub(r'\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+', '[REDACTED_JWT]', text)
-    text = re.sub(r'[A-Za-z0-9_+/=-]{40,}', '[REDACTED_OPAQUE_VALUE]', text)
-    text = re.sub(r'\b[a-zA-Z][a-zA-Z0-9+.-]*://[^\s<>"\)]+', '[URL]', text)
-    text = re.sub(r'[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}', '[EMAIL]', text)
-    text = re.sub(r'/(?:Users|home)/[^/\s]+', '[HOME]', text)
-    return text.strip()
+    for pattern, marker, prefix in rules:
+        for match in re.finditer(pattern, text):
+            start = match.start() + (len(match[1]) if prefix else 0)
+            if match.end() > start:
+                spans.append((start, match.end(), marker))
+    spans.sort(key=lambda span: (span[0], -span[1]))
+    merged = []
+    for start, end, marker in spans:
+        if merged and start < merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(end, merged[-1][1]), merged[-1][2])
+        else:
+            merged.append((start, end, marker))
+    output = []
+    cursor = 0
+    opaque = re.compile(r'[A-Za-z0-9_+/=-]{40,}')
+    for start, end, marker in merged:
+        output.extend((opaque.sub('[REDACTED_OPAQUE_VALUE]', text[cursor:start]), marker))
+        cursor = end
+    output.append(opaque.sub('[REDACTED_OPAQUE_VALUE]', text[cursor:]))
+    return ''.join(output).strip()
 
 
 def user_text(text):

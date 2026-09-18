@@ -16,9 +16,6 @@ Reusable Codex bundles.
   live issue templates, drafts exact issue text, and waits for approval before
   posting.
 - `skills/quick-grill`: adds a short preflight and approval step before work.
-- `skills/codex-better-fork`: launches and supports the experimental
-  handoff-backed fork helper, including opening its localhost UI in Codex's
-  in-app browser.
 - `skills/code-explainer`: inspects live implementation code and creates
   source-backed, Notion-style standalone HTML feature explainers.
 
@@ -43,7 +40,6 @@ Skill bundle:
 mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills"
 cp -R skills/quick-grill "${CODEX_HOME:-$HOME/.codex}/skills/"
 cp -R skills/github-issue-reporter "${CODEX_HOME:-$HOME/.codex}/skills/"
-cp -R skills/codex-better-fork "${CODEX_HOME:-$HOME/.codex}/skills/"
 cp -R skills/code-explainer "${CODEX_HOME:-$HOME/.codex}/skills/"
 ```
 
@@ -55,7 +51,7 @@ Run hook tests from this repository root:
 
 ```bash
 uv run --no-project --python '>=3.11' python hooks/fresh-deps/tests/test-fresh-deps.py
-node --test hooks/unslop-writing/tests/unslop-writing.test.mjs
+node --test hooks/unslop-writing/tests/*.test.mjs
 node hooks/unslop-writing/.codex/hooks/cliche-detector.mjs --self-test
 uv run --no-project --python '>=3.11' python hooks/jev-stop/tests/test-jev-stop.py
 ```

@@ -1,10 +1,12 @@
 {
   "name": "unslop-writing",
   "sourcePath": "hooks/unslop-writing/hooks.json",
-  "description": "Codex writing guard that reviews substantial copy after edits and first-person prose before a turn stops.",
+  "description": "Jev-based contextual cliché review for substantial edited copy and first-person final prose.",
   "compatibility": "direct",
   "notes": [
     "Dependency-free Node implementation.",
+    "Requires a TypeSafe/Jev API key; sends bounded, redacted prose to Jev with a three-second deadline.",
+    "Uses 38 example-based cliché categories with no regex judgment or fallback; service failures allow continuation.",
     "PostToolUse checks added text from apply_patch, Edit, and Write tools.",
     "Stop checks the final assistant message and allows at most one continuation.",
     "Stop intentionally skips short, third-person, and code-heavy responses."

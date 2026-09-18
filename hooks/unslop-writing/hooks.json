@@ -8,7 +8,7 @@
             "type": "command",
             "command": "node \"$(git rev-parse --show-toplevel)/.codex/hooks/unslop-writing.mjs\"",
             "timeout": 10,
-            "statusMessage": "Checking edited prose for clichés"
+            "statusMessage": "Reviewing edited prose with Jev"
           }
         ]
       }
@@ -20,7 +20,7 @@
             "type": "command",
             "command": "node \"$(git rev-parse --show-toplevel)/.codex/hooks/unslop-writing.mjs\"",
             "timeout": 10,
-            "statusMessage": "Checking final prose for clichés"
+            "statusMessage": "Reviewing final prose with Jev"
           }
         ]
       }

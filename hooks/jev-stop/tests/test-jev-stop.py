@@ -22,6 +22,89 @@ def message(role, text, phase=None):
     }}
 
 
+class RedactTests(unittest.TestCase):
+    def test_sensitive_field_aliases_and_delimiters(self):
+        names = ('API_KEY', 'JEV_API_KEY', 'access_token', 'CLIENT_SECRET', 'PASSWORD', 'passwd',
+                 'credential', 'mysql_pwd', 'private_key', 'sessionid', 'session_id', 'pwd', 'db_pass',
+                 'auth_key', 'service_key', 'account_key', 'client_key', 'db_key', 'database_key',
+                 'priv_key', 'database_pass', 'csrf', 'XSRF-TOKEN')
+        for name in names:
+            for quote in ('', '"', "'", '`'):
+                with self.subTest(name=name, quote=quote):
+                    original = f'{name} = {quote}short-private{quote}; after'
+                    expected = f'{name} = [REDACTED]; after'
+                    self.assertEqual(hook.redact(original), expected)
+                    self.assertEqual(hook.redact(expected), expected)
+
+    def test_additional_sensitive_names_and_structures(self):
+        cases = [
+            ('mysql_pwd=short', 'mysql_pwd=[REDACTED]'),
+            ('private_key: short', 'private_key: [REDACTED]'),
+            ('sessionid=short', 'sessionid=[REDACTED]'),
+            ('{"nested":{"password":"short"}}', '{"nested":{"password":[REDACTED]}}'),
+            ('pwd=short', 'pwd=[REDACTED]'),
+            ('db_pass=short', 'db_pass=[REDACTED]'),
+            ('secret=`short secret`', 'secret=[REDACTED]'),
+            ('username: writer password: short-private', '[REDACTED]'),
+            ('username: writer password short-private', '[REDACTED]'),
+            ('{"password": {"current": "short-private"}, "ok": true}', '{"password": [REDACTED], "ok": true}'),
+            ('{"password":\n {"current": "short-private"}, "ok": true}', '{"password":\n [REDACTED], "ok": true}'),
+            ('password="short-private\nprivate-tail', 'password=[REDACTED]'),
+            ('password={"value": ["short-private"}\nprivate-tail', 'password=[REDACTED]'),
+            ('password="short" next', 'password=[REDACTED] next'),
+            ('author="ordinary name"', 'author="ordinary name"'),
+            ('{"\\u0070assword":"short"}', '{"\\u0070assword":[REDACTED]}'),
+            ('{"password":[{"token":"short"}]}', '{"password":[REDACTED]}'),
+        ]
+        for original, expected in cases:
+            with self.subTest(original=original):
+                self.assertEqual(hook.redact(original), expected)
+                self.assertEqual(hook.redact(expected), expected)
+
+    def test_confirmed_redaction_regressions(self):
+        cases = [
+            ('escaped double quote', r'password="start\"secret-tail"; next', 'password=[REDACTED]; next'),
+            ('escaped single quote', r"password='start\'secret-tail'; next", 'password=[REDACTED]; next'),
+            ('escaped backslash', r'password="short\\"; next', 'password=[REDACTED]; next'),
+            ('multiline', 'SECRET="first\nsecond"\nKeep this.', 'SECRET=[REDACTED]\nKeep this.'),
+            ('empty header', 'Authorization:\nKeep this sentence.', 'Authorization:\nKeep this sentence.'),
+            ('empty assignment', 'PASSWORD=\nKeep this sentence.', 'PASSWORD=\nKeep this sentence.'),
+            ('empty auth scheme', 'Bearer\nKeep this sentence.', 'Bearer\nKeep this sentence.'),
+            ('long URL', f"See https://{'a' * 45}.test/path next.", 'See [URL] next.'),
+            ('long email', f"Contact {'a' * 45}@example.test today.", 'Contact [EMAIL] today.'),
+            ('long home username', f"Open /Users/{'a' * 45}/file.md now.", 'Open [HOME]/file.md now.'),
+            ('URL inside quoted secret', "password='secret prefix https://example.test/path'; next", 'password=[REDACTED]; next'),
+            ('home inside quoted secret', "password='secret prefix /Users/alice'; next", 'password=[REDACTED]; next'),
+            ('last JSON property', '{"password":"short-secret"}', '{"password":[REDACTED]}'),
+        ]
+        for name in ('Authorization', 'proxy-authorization', 'COOKIE', 'Set-Cookie'):
+            cases.append((name + ' JSON', f'{{"{name}": "short-secret", "message": "Keep this"}}',
+                          f'{{"{name}": [REDACTED], "message": "Keep this"}}'))
+            cases.append((name + ' header', f'{name}: short-secret; other=value\r\nKeep this.',
+                          f'{name}: [REDACTED]\r\nKeep this.'))
+        for name, original, expected in cases:
+            with self.subTest(name=name):
+                actual = hook.redact(original)
+                self.assertEqual(actual, expected)
+                self.assertEqual(hook.redact(actual), actual)
+
+    def test_preserves_prose_and_existing_redaction_boundaries(self):
+        cases = [
+            ('Useful ordinary prose.\nCrème brûlée — 東京 — 🙂.', 'Useful ordinary prose.\nCrème brûlée — 東京 — 🙂.'),
+            ('  Keep outer whitespace behavior.\n', 'Keep outer whitespace behavior.'),
+            ('a' * 39, 'a' * 39),
+            ('a' * 40, '[REDACTED_OPAQUE_VALUE]'),
+            ('Bearer short-auth', '[REDACTED_AUTH]'),
+            ('eyJhbGciOiJIUzI1NiJ9.e30.c2ln', '[REDACTED_JWT]'),
+            ('ghp_short', '[REDACTED_TOKEN]'),
+            ('-----BEGIN PRIVATE KEY-----\nshort-body\n-----END PRIVATE KEY-----', '[REDACTED_PRIVATE_KEY]'),
+        ]
+        for original, expected in cases:
+            with self.subTest(original=original):
+                self.assertEqual(hook.redact(original), expected)
+        self.assertEqual(hook.redact('fake\\_key and fake_key', 'fake_key'), '[REDACTED] and [REDACTED]')
+
+
 class JevStopTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
@@ -94,6 +177,31 @@ class JevStopTests(unittest.TestCase):
         }])
         self.assertEqual(payload['state']['proposed_final_response'], 'I will finish it.')
 
+    def test_outbound_payload_redacts_escaped_multiline_and_json_secrets(self):
+        text = 'Start\npassword="prefix\\"secret-tail"\nSECRET="first\nsecond"\n{"Cookie":"sid=short-secret"}\nEnd'
+        expected = 'Start\npassword=[REDACTED]\nSECRET=[REDACTED]\n{"Cookie":[REDACTED]}\nEnd'
+        self.transcript.write_text(json.dumps(message('user', text)) + '\n')
+        self.event['last_assistant_message'] = text
+        self.run_hook()
+        body = self.connection.request.call_args.args[2]
+        state = json.loads(body)['state']
+        self.assertEqual(state['conversation'], [{'role': 'user', 'text': expected}])
+        self.assertEqual(state['proposed_final_response'], expected)
+        self.assertEqual(self.connection.request.call_args.args[3]['Authorization'], 'Bearer ' + self.key)
+        self.assertEqual(self.event['last_assistant_message'], text)
+
+    def test_outbound_payload_redacts_nested_values_and_credential_aliases(self):
+        text = 'mysql_pwd="short-private"\nprivate_key="short-private"\n{"sessionid":"short-private"}\n{"password":{"current":"short-private"}}\npwd="short-private"\ndb_pass="short-private"\npassword=`short-private`\nusername: writer password short-private'
+        expected = 'mysql_pwd=[REDACTED]\nprivate_key=[REDACTED]\n{"sessionid":[REDACTED]}\n{"password":[REDACTED]}\npwd=[REDACTED]\ndb_pass=[REDACTED]\npassword=[REDACTED]\n[REDACTED]'
+        self.transcript.write_text(json.dumps(message('user', text)) + '\n')
+        self.event['last_assistant_message'] = text
+        self.run_hook()
+        body = self.connection.request.call_args.args[2]
+        state = json.loads(body)['state']
+        self.assertEqual(state['conversation'], [{'role': 'user', 'text': expected}])
+        self.assertEqual(state['proposed_final_response'], expected)
+        self.assertNotIn('short-private', body.decode())
+
     def test_redaction_is_not_anonymization(self):
         text = 'Alice Example lives at 123 Example Street. Client budget is 120000.'
         self.assertEqual(hook.redact(text), text)
@@ -127,7 +235,7 @@ class JevStopTests(unittest.TestCase):
         self.assertEqual(audit['omitted_message_count'], 0)
 
     def test_bounded_history_preserves_opening_and_latest_scope(self):
-        opening = f'Fix the importer using {self.key}.'
+        opening = f'Fix the importer using {self.key}.\npassword="prefix\\"secret-tail"'
         latest = 'Cancel the fix. Only explain what you found.'
         rows = [message('user', opening)] + [
             message('assistant', f'Prior discussion {number}. ' * 30, 'final')
@@ -138,7 +246,7 @@ class JevStopTests(unittest.TestCase):
         with patch.object(hook, 'MAX_STATE_BYTES', 2_000):
             state = hook.read_state(self.event, self.key, audit)
             self.assertLessEqual(len(json.dumps(state, ensure_ascii=False).encode()), 2_000)
-            self.assertEqual(state['opening_request'], 'Fix the importer using [REDACTED].')
+            self.assertEqual(state['opening_request'], 'Fix the importer using [REDACTED].\npassword=[REDACTED]')
             self.assertEqual(state['conversation'][-1]['text'], latest)
             self.assertTrue(state['earlier_history_omitted'])
             self.assertGreater(audit['omitted_message_count'], 0)
