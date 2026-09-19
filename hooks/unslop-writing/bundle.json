@@ -5,7 +5,7 @@
   "compatibility": "direct",
   "notes": [
     "Dependency-free Node implementation.",
-    "Requires a TypeSafe/Jev API key; sends bounded, redacted prose to Jev with a three-second deadline.",
+    "Uses TypeSafe by default or an HTTPS JEV_API_URL; TypeSafe requires an API key.",
     "Uses 38 example-based cliché categories with no regex judgment or fallback; service failures allow continuation.",
     "PostToolUse checks added text from apply_patch, Edit, and Write tools.",
     "Stop checks the final assistant message and allows at most one continuation.",

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { classify, loadKey } from '../.codex/hooks/unslop-jev.mjs';
+import { classify, loadConfig } from '../.codex/hooks/unslop-jev.mjs';
 
 const state = {
   writing_request: 'Write a direct status update.',
@@ -48,6 +48,9 @@ test('sends the detector question and state with the fixed request policy', asyn
   assert.equal(capture[0].url, 'https://api.typesafe.ai/v1/systemone');
   assert.equal(capture[0].options.method, 'POST');
   assert.equal(capture[0].options.headers.Authorization, 'Bearer test-key');
+  assert.equal(capture[0].options.headers['X-Decision-Key'], 'codex.unslop');
+  assert.ok(Number.isInteger(Number(capture[0].options.headers['X-Decision-Version'])));
+  assert.ok(Number(capture[0].options.headers['X-Decision-Version']) > 0);
   assert.equal(capture[0].body.model, 'jev-latest');
   assert.deepEqual(capture[0].body.state, state);
   assert.equal(capture[0].body.questions.needs_revision.type, 'noul');
@@ -145,17 +148,82 @@ test('rejects a real serialized state over 24000 bytes', async () => {
   await assert.rejects(classify(oversized, { key: 'k', requestImpl: requestStub(answer()) }), error => error.code === 'oversized_state');
 });
 
-test('loads an explicit environment key or a private env file', async () => {
-  assert.equal(loadKey({ JEV_API_KEY: 'from-env' }), 'from-env');
+test('loads the default endpoint and credential from environment or a private env file', async () => {
+  assert.deepEqual(loadConfig({ JEV_API_URL: 'https://api.typesafe.ai/v1/systemone', JEV_API_KEY: 'from-env' }), {
+    endpoint: 'https://api.typesafe.ai/v1/systemone', key: 'from-env'
+  });
   const dir = await mkdtemp(join(tmpdir(), 'unslop-jev-'));
   const file = join(dir, 'jev.env');
   await writeFile(file, 'JEV_API_KEY=file-key\n');
   await chmod(file, 0o600);
   try {
-    assert.equal(loadKey({}, file), 'file-key');
+    assert.deepEqual(loadConfig({}, file), {
+      endpoint: 'https://api.typesafe.ai/v1/systemone', key: 'file-key'
+    });
     await chmod(file, 0o644);
-    assert.throws(() => loadKey({}, file), error => error.code === 'insecure_key_file');
+    assert.throws(() => loadConfig({}, file), error => error.code === 'insecure_key_file');
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('custom endpoint omits provider credentials and needs no key', async () => {
+  const capture = [];
+  assert.equal(await classify({ ...state, text: 'Known credential: must-not-leak' }, {
+    endpoint: 'https://example.invalid/api/jev',
+    key: 'must-not-leak',
+    requestImpl: requestStub(answer(), { capture })
+  }), 0.12);
+  assert.equal(capture[0].url, 'https://example.invalid/api/jev');
+  assert.equal(capture[0].options.headers.Authorization, undefined);
+  assert.ok(!JSON.stringify(capture[0].body).includes('must-not-leak'));
+  assert.equal(capture[0].options.headers['X-Decision-Key'], 'codex.unslop');
+  assertGreaterThanZero(capture[0].options.headers['X-Decision-Version']);
+});
+
+test('loads a custom endpoint from a private env file without a key', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'unslop-jev-'));
+  const file = join(dir, 'jev.env');
+  await writeFile(file, 'JEV_API_URL=https://example.invalid/api/jev\n');
+  await chmod(file, 0o600);
+  try {
+    assert.deepEqual(loadConfig({}, file), { endpoint: 'https://example.invalid/api/jev', key: '' });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('does not require a private file when inherited configuration is sufficient', () => {
+  const missing = join(tmpdir(), 'nonexistent-jev-review-config.env');
+  assert.deepEqual(loadConfig({ JEV_API_KEY: 'synthetic-key' }, missing), {
+    endpoint: 'https://api.typesafe.ai/v1/systemone', key: 'synthetic-key'
+  });
+  assert.deepEqual(loadConfig({ JEV_API_URL: 'https://example.invalid/api/jev' }, missing), {
+    endpoint: 'https://example.invalid/api/jev', key: ''
+  });
+});
+
+test('merges a private-file key with an inherited custom endpoint for redaction', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'unslop-jev-'));
+  const file = join(dir, 'jev.env');
+  await writeFile(file, 'JEV_API_KEY=sample-short-credential\n');
+  await chmod(file, 0o600);
+  try {
+    const config = loadConfig({ JEV_API_URL: 'https://example.invalid/api/jev' }, file);
+    assert.equal(config.endpoint, 'https://example.invalid/api/jev');
+    assert.equal(config.key, 'sample-short-credential');
+    const capture = [];
+    await classify({ ...state, text: 'Value sample-short-credential' }, {
+      endpoint: config.endpoint, key: config.key, requestImpl: requestStub(answer(), { capture })
+    });
+    assert.equal(capture[0].options.headers.Authorization, undefined);
+    assert.ok(!JSON.stringify(capture[0].body).includes('sample-short-credential'));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+function assertGreaterThanZero(value) {
+  assert.ok(Number.isInteger(Number(value)));
+  assert.ok(Number(value) > 0);
+}

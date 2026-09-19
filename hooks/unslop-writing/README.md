@@ -31,19 +31,23 @@ legitimate/quoted cases; it is not a calibrated guarantee for everyday writing.
 
 ## Jev access and data
 
-Requires Node.js 18+ and a TypeSafe credential, read from `TYPESAFE_API_KEY`,
-then `JEV_API_KEY`, or `~/.config/jev.env` containing `JEV_API_KEY=...`.
+Requires Node.js 18+. `JEV_API_URL` selects an HTTPS provider; the default is
+`https://api.typesafe.ai/v1/systemone`. The default requires a TypeSafe credential,
+read from `TYPESAFE_API_KEY`, then `JEV_API_KEY`, or `~/.config/jev.env`.
 The env file must have private permissions (`chmod 600 ~/.config/jev.env`).
 
-Only the candidate prose and a fixed neutral review brief are sent to
-`https://api.typesafe.ai/v1/systemone` using `jev-latest`. Conversation history
-is not read. Fenced code is removed and common credentials, URLs, email addresses,
-and home paths are redacted. Redaction is not anonymization; other private prose
-can remain. The serialized state is limited to 24 KB and is never logged.
+Only the candidate prose and a fixed neutral review brief are sent using
+`jev-latest`. Conversation history is not read. Fenced code is removed and common
+credentials, URLs, email addresses, and home paths are redacted. Redaction is not
+anonymization; other private prose can remain. The serialized state is limited to
+24 KB and is never logged.
 
-Missing credentials, oversized input, invalid replies, and network errors allow
-the turn to continue. Requests have a three-second deadline, with no redirects,
-retries, or regex fallback. Request bodies and credentials are not printed.
+TypeSafe credentials are sent only to the default TypeSafe URL. Custom endpoints
+need no caller key, receive no TypeSafe authorization header, and are never
+followed by an automatic fallback. Missing required credentials, oversized input,
+invalid replies, and network errors allow the turn to continue. Requests have a
+three-second deadline, with no redirects, retries, or regex fallback. Request
+bodies and credentials are not printed.
 
 ## Install
 

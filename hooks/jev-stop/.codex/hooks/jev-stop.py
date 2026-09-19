@@ -13,19 +13,34 @@ import signal
 import sys
 import time
 from collections import deque
+from urllib.parse import urlsplit
 
 THRESHOLD = 0.80
+FRUSTRATED_THRESHOLD = 0.70
+SIGNAL_THRESHOLD = 0.50
 MAX_STATE_BYTES = 64_000
 MAX_OPENING_BYTES = 8_000
 HISTORY_TIMEOUT = 1
 API_TIMEOUT = 3
+DEFAULT_API_URL = 'https://api.typesafe.ai/v1/systemone'
+DECISION_KEY = 'codex.stop'
 ENV_FILE = Path.home() / '.config' / 'jev.env'
 LOG_DIRECTORY = Path.home() / '.codex' / 'log' / 'jev-stop'
 QUESTION_FILE = Path(__file__).with_name('jev-stop-question.json')
+CONTEXT_QUESTIONS_FILE = Path(__file__).with_name('jev-stop-context-questions.json')
+REQUEST_GUIDANCE = {
+    'question': 'Check that the latest question is answered. Continue any other unfinished, authorized work.',
+    'correction': 'Check the user\'s correction against the work. Resolve any missed requirement within scope.',
+    'instruction': 'Check that the latest instruction has been followed.',
+}
+FRUSTRATION_GUIDANCE = (
+    'The latest message expresses frustration. '
+    'Recheck the latest request for missed requirements or repeated mistakes.'
+)
 CONTINUATION = (
-    'Acknowledging the issue does not complete the outstanding task. '
-    'Continue the already-authorized work. If progress genuinely requires a user '
-    'decision or permission, ask the specific necessary question. '
+    'Continue any unfinished, already-authorized work. '
+    'If the work is complete, confirm it with evidence. '
+    'If progress genuinely requires user input or permission, ask the specific question. '
     'Respect explicit pauses and scope limits.'
 )
 
@@ -159,19 +174,31 @@ def user_text(text):
     return text
 
 
-def load_key():
+def load_config():
+    endpoint = os.environ.get('JEV_API_URL', '').strip()
     key = os.environ.get('JEV_API_KEY', '').strip()
-    if key:
-        return key
-    if ENV_FILE.stat().st_mode & 0o077:
-        raise PermissionError('Global env must be private')
-    for line in ENV_FILE.read_text().splitlines():
-        name, separator, value = line.partition('=')
-        if separator and name.strip() == 'JEV_API_KEY':
-            key = value.strip().strip('\"\'')
-            if key:
-                return key
-    raise ValueError('JEV_API_KEY is missing')
+    values = {}
+    if not endpoint or not key:
+        try:
+            mode = ENV_FILE.stat().st_mode
+        except FileNotFoundError:
+            pass
+        else:
+            if mode & 0o077:
+                raise PermissionError('Global env must be private')
+            for line in ENV_FILE.read_text().splitlines():
+                name, separator, value = line.partition('=')
+                if separator:
+                    values[name.strip()] = value.strip().strip('\"\'')
+    endpoint = endpoint or values.get('JEV_API_URL', '').strip() or DEFAULT_API_URL
+    parsed = urlsplit(endpoint)
+    if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password or parsed.fragment:
+        raise ValueError('JEV_API_URL must be an HTTPS URL without credentials or a fragment')
+    is_typesafe = endpoint == DEFAULT_API_URL
+    key = key or values.get('JEV_API_KEY', '').strip()
+    if is_typesafe and not key:
+        raise ValueError('JEV_API_KEY is missing')
+    return endpoint, key
 
 
 def read_state(event, api_key, audit):
@@ -267,32 +294,78 @@ def deadline_expired(_signum, _frame):
     raise TimeoutError('Jev deadline')
 
 
-def classify(state, question, api_key):
-    body = json.dumps({'model': 'jev-latest', 'state': state, 'questions': {'premature_stop': question}}, ensure_ascii=False).encode()
-    connection = http.client.HTTPSConnection('api.typesafe.ai', timeout=API_TIMEOUT)
+def load_questions():
+    return {
+        'premature_stop': json.loads(QUESTION_FILE.read_text()),
+        **json.loads(CONTEXT_QUESTIONS_FILE.read_text()),
+    }
+
+
+def classify(state, questions, endpoint, api_key):
+    body = json.dumps({'model': 'jev-latest', 'state': state, 'questions': questions}, ensure_ascii=False).encode()
+    parsed = urlsplit(endpoint)
+    connection = http.client.HTTPSConnection(parsed.hostname, parsed.port, timeout=API_TIMEOUT)
+    version = (int(digest(questions)[:8], 16) & 0x7fffffff) or 1
+    headers = {
+        'Content-Type': 'application/json',
+        'X-Decision-Key': DECISION_KEY,
+        'X-Decision-Version': str(version),
+    }
+    if endpoint == DEFAULT_API_URL:
+        headers['Authorization'] = 'Bearer ' + api_key
     previous_handler = signal.signal(signal.SIGALRM, deadline_expired)
     signal.setitimer(signal.ITIMER_REAL, API_TIMEOUT)
     try:
-        # http.client does not redirect a bearer credential to a different host.
-        connection.request('POST', '/v1/systemone', body, {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + api_key})
+        path = parsed.path or '/'
+        if parsed.query:
+            path += '?' + parsed.query
+        # http.client does not follow redirects, so credentials stay on the configured destination.
+        connection.request('POST', path, body, headers)
         response = connection.getresponse()
         if response.status != 200:
             return {'reason': 'api_http_error', 'http_status': response.status}
+        run_id = response.getheader('X-Decision-Run-Id')
         payload = response.read(65_537)
         if len(payload) > 65_536:
             raise ValueError('Oversized API response')
         result = json.loads(payload)
-        score = result['answers']['premature_stop']['noul']
+        scores = {}
+        for name in questions:
+            answer = result['answers'][name]
+            score = answer['noul']
+            if answer.get('type') != 'noul' or isinstance(score, bool) or not isinstance(score, (int, float)) or not math.isfinite(score) or not 0 <= score <= 1:
+                raise ValueError('Invalid score')
+            scores[name] = score
         model = result['model']
-        if isinstance(score, bool) or not isinstance(score, (int, float)) or not math.isfinite(score) or not 0 <= score <= 1:
-            raise ValueError('Invalid score')
         if not isinstance(model, str) or not re.fullmatch(r'jev[-a-zA-Z0-9.]+', model):
             raise ValueError('Invalid model')
-        return {'score': score, 'model': model, 'reason': 'above_threshold' if score >= THRESHOLD else 'below_threshold'}
+        score = scores['premature_stop']
+        frustration = scores['frustration']
+        threshold = FRUSTRATED_THRESHOLD if frustration >= SIGNAL_THRESHOLD else THRESHOLD
+        result = {
+            'score': score, 'model': model, 'frustration': frustration,
+            'request_types': {name: scores['request_' + name] for name in REQUEST_GUIDANCE},
+            'threshold': threshold, 'question_version': version,
+            'reason': 'above_threshold' if score >= threshold else 'below_threshold',
+        }
+        if isinstance(run_id, str) and 0 < len(run_id) <= 256:
+            result['decision_run_id'] = run_id
+        return result
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, previous_handler)
         connection.close()
+
+
+def continuation_reason(audit):
+    messages = []
+    if audit['frustration'] >= SIGNAL_THRESHOLD:
+        messages.append(FRUSTRATION_GUIDANCE)
+    messages.extend(
+        guidance for name, guidance in REQUEST_GUIDANCE.items()
+        if audit['request_types'][name] >= SIGNAL_THRESHOLD
+    )
+    return ' '.join([*messages, CONTINUATION])
 
 
 def write_log(audit):
@@ -320,18 +393,18 @@ def main():
         elif event.get('stop_hook_active'):
             audit['reason'] = 'continuation_guard'
         else:
-            question = json.loads(QUESTION_FILE.read_text())
-            audit['policy_sha256'] = digest(question)
+            questions = load_questions()
+            audit['policy_sha256'] = digest(questions)
             audit['hook_sha256'] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
-            api_key = load_key()
+            endpoint, api_key = load_config()
             state = read_state(event, api_key, audit)
             if state is None:
                 audit.setdefault('reason', 'missing_history')
             else:
-                audit.update(classify(state, question, api_key))
-                if audit.get('score', 0) >= THRESHOLD:
+                audit.update(classify(state, questions, endpoint, api_key))
+                if audit.get('score', 0) >= audit['threshold']:
                     audit['decision'] = 'block'
-                    output = {'decision': 'block', 'reason': CONTINUATION}
+                    output = {'decision': 'block', 'reason': continuation_reason(audit)}
     except TimeoutError:
         audit['reason'] = 'api_timeout'
     except Exception as error:

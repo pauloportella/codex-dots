@@ -131,11 +131,18 @@ class JevStopTests(unittest.TestCase):
         self.addCleanup(self.connection_patch.stop)
         self.connection = self.connection_factory.return_value
         self.connection.getresponse.return_value.status = 200
+        self.connection.getresponse.return_value.getheader.return_value = None
         self.reply(0.9)
 
-    def reply(self, score):
+    def reply(self, score, frustration=0, **request_types):
+        scores = {
+            'premature_stop': score, 'frustration': frustration,
+            **{'request_' + name: request_types.get(name, 0) for name in hook.REQUEST_GUIDANCE},
+        }
         self.connection.getresponse.return_value.read.return_value = json.dumps({
-            'model': 'jev-test', 'answers': {'premature_stop': {'noul': score}},
+            'model': 'jev-test', 'answers': {
+                name: {'type': 'noul', 'noul': value} for name, value in scores.items()
+            },
         }).encode()
 
     def run_hook(self):
@@ -150,9 +157,76 @@ class JevStopTests(unittest.TestCase):
         self.reply(0.8)
         self.assertEqual(self.run_hook(), {'decision': 'block', 'reason': hook.CONTINUATION})
         self.connection_factory.reset_mock()
+        self.reply(0.99, frustration=0.99, correction=0.99)
         self.event['stop_hook_active'] = True
         self.assertEqual(self.run_hook(), {})
         self.connection_factory.assert_not_called()
+
+    def test_frustration_lowers_threshold_without_replacing_stop_score(self):
+        cases = (
+            (0.79, 0.49, 0.80, False),
+            (0.80, 0.49, 0.80, True),
+            (0.69, 0.99, 0.70, False),
+            (0.70, 0.50, 0.70, True),
+            (0.75, 0.99, 0.70, True),
+            (0.01, 1.00, 0.70, False),
+        )
+        for score, frustration, threshold, blocked in cases:
+            with self.subTest(score=score, frustration=frustration):
+                self.reply(score, frustration=frustration)
+                output = self.run_hook()
+                self.assertEqual(output.get('decision') == 'block', blocked)
+                audit = json.loads(next(hook.LOG_DIRECTORY.glob('*.jsonl')).read_text().splitlines()[-1])
+                self.assertEqual(audit['threshold'], threshold)
+                self.assertEqual(audit['frustration'], frustration)
+                self.assertEqual(audit['reason'], 'above_threshold' if blocked else 'below_threshold')
+                if blocked:
+                    self.assertEqual(hook.FRUSTRATION_GUIDANCE in output['reason'], frustration >= 0.50)
+
+    def test_overlapping_request_types_and_frustration_guide_the_message(self):
+        self.reply(0.75, frustration=0.99, question=0.95, correction=0.90, instruction=0.20)
+        output = self.run_hook()
+        self.assertEqual(output['decision'], 'block')
+        self.assertIn(hook.FRUSTRATION_GUIDANCE, output['reason'])
+        self.assertIn(hook.REQUEST_GUIDANCE['question'], output['reason'])
+        self.assertIn(hook.REQUEST_GUIDANCE['correction'], output['reason'])
+        self.assertNotIn(hook.REQUEST_GUIDANCE['instruction'], output['reason'])
+        self.assertIn(hook.CONTINUATION, output['reason'])
+        audit = json.loads(next(hook.LOG_DIRECTORY.glob('*.jsonl')).read_text().splitlines()[-1])
+        self.assertEqual(audit['request_types'], {'question': 0.95, 'correction': 0.90, 'instruction': 0.20})
+        self.reply(0.80, instruction=0.99)
+        self.assertIn(hook.REQUEST_GUIDANCE['instruction'], self.run_hook()['reason'])
+        self.reply(0.79, question=1, correction=1, instruction=1)
+        self.assertEqual(self.run_hook(), {})
+
+    def test_every_question_revision_changes_the_request_version(self):
+        questions = hook.load_questions()
+        hook.classify({}, questions, hook.DEFAULT_API_URL, self.key)
+        original = self.connection.request.call_args.args[3]['X-Decision-Version']
+        for name in questions:
+            with self.subTest(question=name):
+                revised = json.loads(json.dumps(questions))
+                revised[name]['instructions'] += '\nSynthetic revision.'
+                hook.classify({}, revised, hook.DEFAULT_API_URL, self.key)
+                version = self.connection.request.call_args.args[3]['X-Decision-Version']
+                self.assertNotEqual(version, original)
+                self.assertGreater(int(version), 0)
+        self.run_hook()
+        audit = json.loads(next(hook.LOG_DIRECTORY.glob('*.jsonl')).read_text().splitlines()[-1])
+        self.assertEqual(str(audit['question_version']), original)
+
+    def test_invalid_or_missing_context_answers_allow_stop(self):
+        for name in ('frustration', 'request_question', 'request_correction', 'request_instruction'):
+            for bad_answer in (None, {'type': 'score', 'noul': 1}, {'type': 'noul', 'noul': True}, {'type': 'noul', 'noul': 1.1}):
+                with self.subTest(question=name, answer=bad_answer):
+                    self.reply(0.99)
+                    payload = json.loads(self.connection.getresponse.return_value.read.return_value)
+                    if bad_answer is None:
+                        del payload['answers'][name]
+                    else:
+                        payload['answers'][name] = bad_answer
+                    self.connection.getresponse.return_value.read.return_value = json.dumps(payload).encode()
+                    self.assertEqual(self.run_hook(), {})
 
     def test_outbound_payload_filters_context_and_redacts_credentials(self):
         rows = [
@@ -166,11 +240,14 @@ class JevStopTests(unittest.TestCase):
         ]
         self.transcript.write_text('\n'.join(json.dumps(row) for row in rows))
         self.run_hook()
-        self.connection_factory.assert_called_once_with('api.typesafe.ai', timeout=3)
+        self.connection_factory.assert_called_once_with('api.typesafe.ai', None, timeout=3)
         method, path, body, headers = self.connection.request.call_args.args
         self.assertEqual((method, path), ('POST', '/v1/systemone'))
         self.assertEqual(headers['Authorization'], 'Bearer ' + self.key)
+        self.assertEqual(headers['X-Decision-Key'], 'codex.stop')
+        self.assertGreater(int(headers['X-Decision-Version']), 0)
         payload = json.loads(body)
+        self.assertEqual(payload['questions'], hook.load_questions())
         self.assertEqual(payload['questions']['premature_stop'], json.loads(hook.QUESTION_FILE.read_text()))
         self.assertEqual(payload['state']['conversation'], [{
             'role': 'user', 'text': 'Fix it using [REDACTED], API_KEY=[REDACTED] and [EMAIL].',
@@ -281,12 +358,48 @@ class JevStopTests(unittest.TestCase):
     def test_private_env_file_and_environment_precedence(self):
         hook.ENV_FILE.write_text('JEV_API_KEY=file-test-key\n')
         hook.ENV_FILE.chmod(0o600)
-        self.assertEqual(hook.load_key(), self.key)
+        self.assertEqual(hook.load_config(), (hook.DEFAULT_API_URL, self.key))
         with patch.dict(os.environ, {'JEV_API_KEY': ''}):
-            self.assertEqual(hook.load_key(), 'file-test-key')
+            self.assertEqual(hook.load_config(), (hook.DEFAULT_API_URL, 'file-test-key'))
             hook.ENV_FILE.chmod(0o644)
             with self.assertRaises(PermissionError):
-                hook.load_key()
+                hook.load_config()
+
+    def test_custom_endpoint_uses_no_provider_credential_and_logs_run_id(self):
+        endpoint = 'https://example.invalid/api/jev'
+        self.connection.getresponse.return_value.getheader.return_value = 'run-synthetic-123'
+        self.event['last_assistant_message'] = 'The known credential is ' + self.key
+        with patch.dict(os.environ, {'JEV_API_URL': endpoint, 'JEV_API_KEY': self.key}):
+            self.assertEqual(self.run_hook()['decision'], 'block')
+        self.connection_factory.assert_called_once_with('example.invalid', None, timeout=3)
+        method, path, _body, headers = self.connection.request.call_args.args
+        self.assertEqual((method, path), ('POST', '/api/jev'))
+        self.assertNotIn('Authorization', headers)
+        self.assertNotIn(self.key, self.connection.request.call_args.args[2].decode())
+        self.assertEqual(headers['X-Decision-Key'], 'codex.stop')
+        self.assertGreater(int(headers['X-Decision-Version']), 0)
+        audit = json.loads(next(hook.LOG_DIRECTORY.glob('*.jsonl')).read_text().splitlines()[-1])
+        self.assertEqual(audit['decision_run_id'], 'run-synthetic-123')
+
+    def test_custom_endpoint_can_come_from_private_env_without_a_key(self):
+        hook.ENV_FILE.write_text('JEV_API_URL=https://example.invalid/api/jev\n')
+        hook.ENV_FILE.chmod(0o600)
+        with patch.dict(os.environ, {'JEV_API_URL': '', 'JEV_API_KEY': ''}):
+            self.assertEqual(hook.load_config(), ('https://example.invalid/api/jev', ''))
+
+    def test_missing_private_file_is_optional_when_environment_is_sufficient(self):
+        with patch.dict(os.environ, {'JEV_API_URL': '', 'JEV_API_KEY': self.key}):
+            self.assertEqual(hook.load_config(), (hook.DEFAULT_API_URL, self.key))
+        with patch.dict(os.environ, {'JEV_API_URL': 'https://example.invalid/api/jev', 'JEV_API_KEY': ''}):
+            self.assertEqual(hook.load_config(), ('https://example.invalid/api/jev', ''))
+
+    def test_custom_environment_endpoint_merges_file_key_for_redaction(self):
+        hook.ENV_FILE.write_text('JEV_API_KEY=file-test-key\n')
+        hook.ENV_FILE.chmod(0o600)
+        with patch.dict(os.environ, {'JEV_API_URL': 'https://example.invalid/api/jev', 'JEV_API_KEY': ''}):
+            endpoint, key = hook.load_config()
+        self.assertEqual(endpoint, 'https://example.invalid/api/jev')
+        self.assertEqual(hook.redact('Value file-test-key', key), 'Value [REDACTED]')
 
     def test_missing_key_or_transcript_skips_api(self):
         with patch.dict(os.environ, {'JEV_API_KEY': ''}):

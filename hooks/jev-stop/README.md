@@ -3,8 +3,9 @@
 Codex Stop guard that asks Jev whether a final response leaves authorized work
 unfinished.
 
-Compatibility: direct. Requires macOS or Linux, Git, uv, Python 3.11+, and a
-TypeSafe API key. The deadline uses Unix signals; Windows is not supported.
+Compatibility: direct. Requires macOS or Linux, Git, uv, and Python 3.11+.
+The public default uses TypeSafe and requires its API key. The deadline uses
+Unix signals; Windows is not supported.
 
 ## Events
 
@@ -20,16 +21,21 @@ keeps a recent suffix and the opening user request if that request is at most
 8 KB. The classifier is told that the opening request may have been completed
 or superseded. Oversized context without a usable recent user message is skipped.
 
-It sends that dialogue and the proposed final response to
-`https://api.typesafe.ai/v1/systemone`, using `jev-latest` and the adjacent
-`jev-stop-question.json`. Original dialogue survives resume and compaction when
-present in the transcript; no additional prompt log or cross-task memory is used.
+It sends that dialogue and the proposed final response to `JEV_API_URL`, using
+`jev-latest` and the adjacent question JSON files. The default is
+`https://api.typesafe.ai/v1/systemone`. Original dialogue survives resume and
+compaction when present in the transcript; no additional prompt log or cross-task
+memory is used.
 The transcript format is a Codex implementation detail, so extraction needs
 checking after format changes. Omitted middle history can still hide obligations,
 and indirect completeness questions can remain below threshold with full history.
 
-A score of at least 0.80 asks Codex to continue already-authorized work or ask
-the necessary clarification. The question respects explanation-only requests,
+A premature-stop score of at least 0.80 asks Codex to continue already-authorized
+work or ask the necessary clarification. The threshold drops to 0.70 when the
+latest user message has a frustration probability of at least 0.50. Separate
+checks identify questions, corrections, and instructions; more than one can apply.
+These checks and frustration guide the continuation message. They do not grant
+permission to stop or expand the task. The stop question respects explanation-only requests,
 explicit pauses, scope limits, and genuine blockers. It evaluates the stopping
 point, not code correctness. `stop_hook_active` prevents a second continuation.
 
@@ -43,14 +49,18 @@ deadline and no retry; the hook timeout is five seconds.
 Copy `hooks/jev-stop/.codex/hooks/*` into the target project's `.codex/hooks/`
 and merge `hooks/jev-stop/hooks.json` into its `.codex/hooks.json`.
 
-Set `JEV_API_KEY` in Codex's environment, or create `~/.config/jev.env` with
-mode `0600` containing:
+Set values in Codex's environment, or create `~/.config/jev.env` with mode
+`0600` containing:
 
 ```dotenv
 JEV_API_KEY=replace-with-your-key
+# Optional: JEV_API_URL=https://jev.example.com/api/jev
 ```
 
-The environment takes precedence. The file is read as data, never executed.
+The environment takes precedence. `JEV_API_KEY` is required and sent only when
+the destination is the default TypeSafe URL. Custom HTTPS endpoints need no
+caller TypeSafe key, receive no TypeSafe authorization header, and are never
+followed by an automatic fallback. The file is read as data, never executed.
 Keep the real key outside Git. This env file and the log directory below use
 the user's home directory, even when `CODEX_HOME` points elsewhere.
 
@@ -67,7 +77,7 @@ installation. Disable the Jev entry in `/hooks` to stop the check. See the
 
 ## Privacy and logs
 
-Enabling this hook sends conversation text to TypeSafe. Tool calls/results,
+Enabling this hook sends conversation text to the configured provider. Tool calls/results,
 reasoning, compaction summaries, and recognized injected instruction wrappers
 are excluded. Known credential formats, secret assignments, private keys,
 URLs, and emails are redacted before sending.
@@ -79,7 +89,7 @@ provider.
 
 Daily decision logs are created at `~/.codex/log/jev-stop/YYYY-MM-DD.jsonl`
 with mode `0600`. They contain task/turn IDs, the full local transcript path,
-hashes, score/model when available, decision/reason, and timing. Coverage metadata
+hashes, scores/model when available, the selected threshold, decision/reason, and timing. Coverage metadata
 includes available/selected dialogue counts, omitted-message count, whether the
 opening request survived, redacted-state bytes, and history-collection time.
 Logs exclude conversation text, keys, and raw API/error bodies. Logs are retained

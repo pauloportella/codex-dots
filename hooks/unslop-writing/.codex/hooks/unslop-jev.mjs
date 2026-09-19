@@ -1,9 +1,11 @@
 import { readFileSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { request as httpsRequest } from 'node:https';
 
-const ENDPOINT = 'https://api.typesafe.ai/v1/systemone';
+const DEFAULT_ENDPOINT = 'https://api.typesafe.ai/v1/systemone';
+const DECISION_KEY = 'codex.unslop';
 const MAX_STATE_BYTES = 24_000;
 const MAX_RESPONSE_BYTES = 65_536;
 
@@ -101,22 +103,37 @@ function redact(value, key = '') {
   return chunks.join('');
 }
 
-function loadKey(env = process.env, envFile = join(homedir(), '.config', 'jev.env')) {
-  const inherited = String(env.TYPESAFE_API_KEY ?? '').trim() || String(env.JEV_API_KEY ?? '').trim();
-  if (inherited) return inherited;
-  let mode;
-  try { mode = statSync(envFile).mode; } catch { throw Object.assign(new Error('missing_key'), { code: 'missing_key' }); }
-  if ((mode & 0o077) !== 0) throw Object.assign(new Error('insecure_key_file'), { code: 'insecure_key_file' });
-  for (const line of readFileSync(envFile, 'utf8').split(/\r?\n/)) {
-    const match = line.match(/^\s*JEV_API_KEY\s*=\s*(.*?)\s*$/);
-    if (match) { const key = match[1].replace(/^['"]|['"]$/g, ''); if (key) return key; }
+function loadConfig(env = process.env, envFile = join(homedir(), '.config', 'jev.env')) {
+  let endpoint = String(env.JEV_API_URL ?? '').trim();
+  let key = String(env.TYPESAFE_API_KEY ?? '').trim() || String(env.JEV_API_KEY ?? '').trim();
+  const values = {};
+  if (!endpoint || !key) {
+    let mode;
+    try { mode = statSync(envFile).mode; } catch (error) {
+      if (error?.code !== 'ENOENT') throw failure('config_error');
+    }
+    if (mode !== undefined) {
+      if ((mode & 0o077) !== 0) throw failure('insecure_key_file');
+      for (const line of readFileSync(envFile, 'utf8').split(/\r?\n/)) {
+        const match = line.match(/^\s*([A-Z_]+)\s*=\s*(.*?)\s*$/);
+        if (match) values[match[1]] = match[2].replace(/^['"]|['"]$/g, '');
+      }
+    }
   }
-  throw Object.assign(new Error('missing_key'), { code: 'missing_key' });
+  endpoint ||= String(values.JEV_API_URL ?? '').trim() || DEFAULT_ENDPOINT;
+  let url;
+  try { url = new URL(endpoint); } catch { throw failure('invalid_endpoint'); }
+  if (url.protocol !== 'https:' || url.username || url.password || url.hash) throw failure('invalid_endpoint');
+  key ||= String(values.JEV_API_KEY ?? '').trim();
+  if (endpoint === DEFAULT_ENDPOINT) {
+    if (!key) throw failure('missing_key');
+  }
+  return { endpoint, key };
 }
 
 function failure(code) { return Object.assign(new Error(code), { code }); }
 
-function requestJson(body, key, deadlineMs, requestImpl = httpsRequest) {
+function requestJson(body, endpoint, key, version, deadlineMs, requestImpl = httpsRequest) {
   return new Promise((resolve, reject) => {
     let req;
     let settled = false;
@@ -130,9 +147,11 @@ function requestJson(body, key, deadlineMs, requestImpl = httpsRequest) {
       } else resolve(value);
     };
     const timer = setTimeout(() => settle(failure('deadline')), deadlineMs);
-    const options = { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` } };
+    const headers = { 'Content-Type': 'application/json', 'X-Decision-Key': DECISION_KEY, 'X-Decision-Version': String(version) };
+    if (endpoint === DEFAULT_ENDPOINT) headers.Authorization = `Bearer ${key}`;
+    const options = { method: 'POST', headers };
     try {
-      req = requestImpl(ENDPOINT, options, response => {
+      req = requestImpl(endpoint, options, response => {
         const chunks = [];
         let size = 0;
         response.on('error', () => settle(failure('request_error')));
@@ -158,7 +177,10 @@ function requestJson(body, key, deadlineMs, requestImpl = httpsRequest) {
 }
 
 async function classify(state, options = {}) {
-  const key = options.key ?? loadKey();
+  const config = options.endpoint
+    ? loadConfig({ JEV_API_URL: options.endpoint, JEV_API_KEY: options.key ?? '' })
+    : options.key !== undefined ? { endpoint: DEFAULT_ENDPOINT, key: options.key } : loadConfig();
+  const { endpoint, key } = config;
   if (!state || typeof state.text !== 'string' || !state.text.trim()) throw failure('empty_text');
   const writingRequest = typeof state.writing_request === 'string' ? state.writing_request : '';
   const safeState = { writing_request: redact(writingRequest, key), text: redact(state.text, key) };
@@ -167,11 +189,12 @@ async function classify(state, options = {}) {
   let question;
   try { question = JSON.parse(readFileSync(new URL('./unslop-question.json', import.meta.url), 'utf8')); } catch { throw failure('missing_question'); }
   const body = { model: 'jev-latest', state: safeState, questions: { needs_revision: question } };
-  const result = await requestJson(body, key, options.deadlineMs ?? 3000, options.requestImpl ?? httpsRequest);
+  const version = (createHash('sha256').update(JSON.stringify(question)).digest().readUInt32BE() & 0x7fffffff) || 1;
+  const result = await requestJson(body, endpoint, key, version, options.deadlineMs ?? 3000, options.requestImpl ?? httpsRequest);
   const answer = result?.answers?.needs_revision;
   if (answer?.type !== 'noul' || typeof answer.noul !== 'number' || !Number.isFinite(answer.noul) || answer.noul < 0 || answer.noul > 1) throw failure('invalid_response');
   if (typeof result.model !== 'string' || !/^jev[-a-zA-Z0-9.]+$/.test(result.model)) throw failure('invalid_response');
   return answer.noul;
 }
 
-export { classify, redact, loadKey };
+export { classify, redact, loadConfig };
