@@ -55,7 +55,7 @@ function redact(value, key = '') {
       add(at, at + key.length, '[REDACTED]');
     }
   }
-  const fields = /("(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|[A-Za-z_$][\w.$-]*)[ \t]*(?::=|=>|[:=])[ \t]*/g;
+  const fields = /("(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|[A-Za-z_$][\p{L}\p{N}_.$-]*)[ \t]*(?::=|=>|[:=])[ \t]*/gu;
   for (let match; (match = fields.exec(text));) {
     if (!sensitiveField(match[1])) continue;
     let start = fields.lastIndex;
@@ -74,7 +74,7 @@ function redact(value, key = '') {
     [/\b(?:Bearer|Basic)[ \t]+[A-Za-z0-9._~+/=-]+/gi, '[REDACTED_AUTH]'],
     [/\b(?:username|login|u:)[ \t]*:?[ \t]*\S+[ \t]+(?:password|pw|p:)[ \t]*:?[ \t]*[^\r\n]+/gi, '[REDACTED]'],
     [/\b[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^\s<>"'`\)]+/g, '[URL]'],
-    [/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/g, '[EMAIL]'],
+    [/[\p{L}\p{N}_.+-]+@[\p{L}\p{N}_.-]+\.[A-Za-z]{2,}/gu, '[EMAIL]'],
     [/\/(?:Users|home)\/[^/\s"'`<>\)]+/g, '[HOME]'],
     [/\b(?:apikey_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]{15,}|gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|AKIA[A-Z0-9]{16}|xox[baprs]-[A-Za-z0-9-]+)\b/g, '[REDACTED_TOKEN]'],
     [/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, '[REDACTED_JWT]'],
@@ -197,4 +197,4 @@ async function classify(state, options = {}) {
   return answer.noul;
 }
 
-export { classify, redact, loadConfig };
+export { classify, redact, sensitiveField, loadConfig };

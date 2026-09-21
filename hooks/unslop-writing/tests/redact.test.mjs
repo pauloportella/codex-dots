@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { redact } from '../.codex/hooks/unslop-jev.mjs';
+import { redact, sensitiveField } from '../.codex/hooks/unslop-jev.mjs';
 
 // Fake, deliberately short credentials keep one rule from hiding another's failure.
 const cases = [
@@ -20,6 +20,10 @@ const cases = [
   ['URL in Markdown', '[link](https://example.test/path)', '[link]([URL])'],
   ['URL with long host', `See https://${'a'.repeat(45)}.test/path next.`, 'See [URL] next.'],
   ['email plus tag', 'Contact first.last+tag@example.test today.', 'Contact [EMAIL] today.'],
+  ['Unicode email local part', 'Contact müller@example.test today.', 'Contact [EMAIL] today.'],
+  ['Unicode email domain', 'Contact writer@例子.test today.', 'Contact [EMAIL] today.'],
+  ['Unicode sensitive field suffix', 'passwordé=short-private; next', 'passwordé=[REDACTED]; next'],
+  ['Unicode sensitive field infix', 'apiékey=short-private; next', 'apiékey=[REDACTED]; next'],
   ['email with long local part', `Contact ${'a'.repeat(45)}@example.test today.`, 'Contact [EMAIL] today.'],
   ['macOS home', 'Open /Users/alice/private/file.md now.', 'Open [HOME]/private/file.md now.'],
   ['Linux home', 'Open /home/alice/private/file.md now.', 'Open [HOME]/private/file.md now.'],
@@ -114,4 +118,11 @@ test('redact: natural username/password pairs leave no credential values', () =>
   assert.ok(output.startsWith('Before\n'));
   assert.ok(output.endsWith('\nAfter'));
   assert.equal(redact(output), output);
+});
+
+test('sensitiveField supports structured redaction without copying field rules', () => {
+  for (const name of ['passwordé', 'apiékey', 'Authorization', 'session_id']) {
+    assert.equal(sensitiveField(name), true, name);
+  }
+  assert.equal(sensitiveField('description'), false);
 });

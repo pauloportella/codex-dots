@@ -42,6 +42,11 @@ credentials, URLs, email addresses, and home paths are redacted. Redaction is no
 anonymization; other private prose can remain. The serialized state is limited to
 24 KB and is never logged.
 
+Other local tools can import `redact(text, key)` and `sensitiveField(name)` from
+`unslop-jev.mjs` to reuse the same string and structured-field rules. Importing the
+module does not run the hook or send a request. String redaction preserves outer
+whitespace; callers that need trimming must apply it separately.
+
 TypeSafe credentials are sent only to the default TypeSafe URL. Custom endpoints
 need no caller key, receive no TypeSafe authorization header, and are never
 followed by an automatic fallback. Missing required credentials, oversized input,
